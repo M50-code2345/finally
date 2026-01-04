@@ -3643,13 +3643,13 @@ class AdvancedOrderFlow:
         if len(bids_filtered) >= 20:
             self.depth_l20["bid"] = sum(q for _, q in bids_filtered[:20])
         if len(bids_filtered) >= 50:
-            self.depth_l50 = {"bid": sum(q for _, q in bids_filtered[:50])}
+            self.depth_l50["bid"] = sum(q for _, q in bids_filtered[:50])
         if len(bids_filtered) >= 100:
-            self.depth_l100 = {"bid": sum(q for _, q in bids_filtered[:100])}
+            self.depth_l100["bid"] = sum(q for _, q in bids_filtered[:100])
         if len(bids_filtered) >= 500:
-            self.depth_l500 = {"bid": sum(q for _, q in bids_filtered[:500])}
+            self.depth_l500["bid"] = sum(q for _, q in bids_filtered[:500])
         if len(bids_filtered) >= 1000:
-            self.depth_l1000 = {"bid": sum(q for _, q in bids_filtered[:1000])}
+            self.depth_l1000["bid"] = sum(q for _, q in bids_filtered[:1000])
             
         if len(asks_filtered) >= 1:
             self.depth_l1["ask"] = asks_filtered[0][1]
