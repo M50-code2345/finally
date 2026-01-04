@@ -45,10 +45,35 @@ pip install tenacity  # For automatic REST API retries
 
 ## Usage
 
-### Basic Usage
+### Basic Usage (Python Script)
 
 ```python
 import asyncio
+from orderbook_streamer import OrderbookStreamer, OrderbookSnapshot
+
+# Define your callback function
+async def on_orderbook_update(snapshot: OrderbookSnapshot):
+    print(f"Best Bid: ${snapshot.best_bid:.2f}")
+    print(f"Best Ask: ${snapshot.best_ask:.2f}")
+    print(f"Spread: ${snapshot.spread:.2f}")
+
+async def main():
+    # Create streamer
+    streamer = OrderbookStreamer(
+        symbol="BTCUSDT",
+        on_orderbook=on_orderbook_update
+    )
+    
+    # Start streaming
+    await streamer.start()
+
+# Run it
+asyncio.run(main())
+```
+
+### Basic Usage (Jupyter/IPython)
+
+```python
 from orderbook_streamer import OrderbookStreamer, OrderbookSnapshot
 
 # Define your callback function
@@ -63,9 +88,11 @@ streamer = OrderbookStreamer(
     on_orderbook=on_orderbook_update
 )
 
-# Start streaming
+# Start streaming (no asyncio.run needed in Jupyter)
 await streamer.start()
 ```
+
+**Note:** In Jupyter/IPython, you can use `await` directly since they have a built-in event loop. Do NOT use `asyncio.run()` in Jupyter - it will raise `RuntimeError: asyncio.run() cannot be called from a running event loop`.
 
 ### Advanced Configuration
 
@@ -310,6 +337,26 @@ pip install tenacity
 - Increase timeout in code (default: 10s)
 - Check Binance API rate limits
 - Verify API endpoint is accessible
+
+### RuntimeError: asyncio.run() cannot be called from a running event loop
+
+This error occurs when trying to use `asyncio.run()` in Jupyter/IPython notebooks.
+
+**Solution:**
+```python
+# ❌ WRONG - Don't use in Jupyter
+import asyncio
+asyncio.run(streamer.start())
+
+# ✅ CORRECT - Use in Jupyter/IPython
+await streamer.start()
+```
+
+**Or use the helper:**
+```python
+from orderbook_streamer import example_usage
+await example_usage()
+```
 
 ## License
 

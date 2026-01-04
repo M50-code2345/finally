@@ -409,6 +409,46 @@ async def example_usage():
             print(f"  {key}: {value}")
 
 
+def run_example():
+    """
+    Helper function to run the example in different environments.
+    
+    Usage in regular Python:
+        python orderbook_streamer.py
+    
+    Usage in Jupyter/IPython:
+        from orderbook_streamer import run_example
+        run_example()  # Will provide instructions
+        
+        # Or directly:
+        await example_usage()
+    """
+    import sys
+    
+    try:
+        # Check if we're in an environment with a running event loop
+        loop = asyncio.get_running_loop()
+        # If we get here, we're in Jupyter/IPython
+        print("=" * 60)
+        print("⚠️  Jupyter/IPython Detected")
+        print("=" * 60)
+        print()
+        print("To run the example in Jupyter/IPython, use:")
+        print()
+        print("  from orderbook_streamer import example_usage")
+        print("  await example_usage()")
+        print()
+        print("Note: Use Ctrl+C or interrupt the kernel to stop.")
+        print()
+    except RuntimeError:
+        # No running loop - we can use asyncio.run()
+        print("=" * 60)
+        print("Orderbook Data Streamer - Example Usage")
+        print("=" * 60)
+        print()
+        asyncio.run(example_usage())
+
+
 if __name__ == "__main__":
     """
     Run the example when executed directly.
@@ -416,12 +456,10 @@ if __name__ == "__main__":
     Usage:
         python orderbook_streamer.py
     
+    For Jupyter/IPython:
+        from orderbook_streamer import example_usage
+        await example_usage()
+    
     Stop with Ctrl+C
     """
-    print("=" * 60)
-    print("Orderbook Data Streamer - Example Usage")
-    print("=" * 60)
-    print()
-    
-    # Run the example
-    asyncio.run(example_usage())
+    run_example()
