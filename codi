@@ -4406,11 +4406,11 @@ class AdvancedOrderFlow:
             if ts >= cutoff_time
         }
         
-        # Clean up whale clusters (price -> [trades])
+        # Clean up whale clusters (price -> [(timestamp, side, quantity)])
         for price in list(self.whale_clusters.keys()):
             self.whale_clusters[price] = [
                 trade for trade in self.whale_clusters[price] 
-                if trade.get('timestamp', 0) >= cutoff_time
+                if trade[0] >= cutoff_time  # trade is (timestamp, side, quantity)
             ]
             if not self.whale_clusters[price]:
                 del self.whale_clusters[price]
