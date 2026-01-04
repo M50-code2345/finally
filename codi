@@ -10725,6 +10725,28 @@ import math
 import copy
 import nest_asyncio
 
+# Retry library for robust REST API calls
+try:
+    from tenacity import (
+        retry,
+        stop_after_attempt,
+        wait_exponential,
+        retry_if_exception_type,
+        before_sleep_log
+    )
+    import logging
+    TENACITY_AVAILABLE = True
+    # Set up logger for retry attempts
+    retry_logger = logging.getLogger(__name__)
+except ImportError:
+    TENACITY_AVAILABLE = False
+    print("⚠️  tenacity not available - REST calls will not auto-retry on failures")
+    # Fallback: no-op decorator
+    def retry(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 
 nest_asyncio.apply()
 
@@ -15688,41 +15710,113 @@ class MarketClient:
             print(f"  • {kf}: {vf}")
 
     async def ws_listener(self):
+        """
+        WebSocket listener with robust reconnection logic.
+        
+        Features:
+        - Exponential backoff on connection failures
+        - Connection state tracking for data quality
+        - Automatic recovery on disconnections
+        - Configurable timeouts for reliability
+        """
         backoff = 1
+        max_backoff = 30
+        connection_attempts = 0
+        
         while True:
             try:
+                connection_attempts += 1
+                print(f"[{self.name}] 🔄 WS connection attempt #{connection_attempts}")
+                
                 async with websockets.connect(
                     self.ws_url,
-                    ping_interval=40,
-                    ping_timeout=30,
-                    close_timeout=5
+                    ping_interval=40,      # Send ping every 40s to keep alive
+                    ping_timeout=30,       # Wait 30s for pong before failing
+                    close_timeout=5,       # Clean shutdown timeout
+                    max_size=10_000_000    # 10MB max message size for large depth updates
                 ) as ws:
-                    print(f"[{self.name}] ✅ WS connected")
+                    print(f"[{self.name}] ✅ WS connected successfully")
+                    
                     # Track connection time for data quality warmup
                     self.ws_connected_time = time.time()
                     self.first_snapshot_allowed = False  # Reset on reconnection
                     print(f"[{self.name}] ⏳ Data warmup period started (30s minimum before first snapshot)")
-                    async for raw in ws:
-                        await self.handle_ws(json.loads(raw))
+                    
+                    # Reset backoff on successful connection
                     backoff = 1
+                    connection_attempts = 0
+                    
+                    # Process messages
+                    async for raw in ws:
+                        try:
+                            await self.handle_ws(json.loads(raw))
+                        except json.JSONDecodeError as e:
+                            print(f"[{self.name}] ⚠️ Invalid JSON received: {e}")
+                        except Exception as e:
+                            print(f"[{self.name}] ⚠️ Message processing error: {e}")
+                    
+            except websockets.exceptions.ConnectionClosed as e:
+                print(f"[{self.name}] ⚠️ WS connection closed: {e}. Reconnecting in {backoff}s…")
+            except asyncio.TimeoutError:
+                print(f"[{self.name}] ⚠️ WS timeout. Reconnecting in {backoff}s…")
             except Exception as e:
                 print(f"[{self.name}] ⚠️ WS error: {e}. Reconnecting in {backoff}s…")
-                self.ws_connected_time = None  # Clear on disconnection
-                self.first_snapshot_allowed = False
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30)
+            
+            # Clear connection state on disconnection
+            self.ws_connected_time = None
+            self.first_snapshot_allowed = False
+            
+            # Exponential backoff with max limit
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+            
+            # Add jitter to prevent thundering herd
+            if backoff > 4:
+                import random
+                jitter = random.uniform(0, min(backoff * 0.3, 5))
+                await asyncio.sleep(jitter)
 
     async def poll_rest(self, name, url, interval, proc):
+        """
+        Poll REST API with tenacity retry logic for reliability.
+        Automatically retries on transient failures with exponential backoff.
+        """
         async with aiohttp.ClientSession() as sess:
             while True:
                 ts = now_str()
                 try:
-                    async with sess.get(url) as resp:
-                        data = await resp.json()
+                    # Use retry decorator if tenacity is available
+                    if TENACITY_AVAILABLE:
+                        data = await self._fetch_with_retry(sess, url, name)
+                    else:
+                        # Fallback: single attempt
+                        async with sess.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            data = await resp.json()
+                    
                     await proc(name, data, ts)
                 except Exception as e:
-                    print(f"[{self.name}] ⚠️ REST {name} error: {e}")
+                    print(f"[{self.name}] ⚠️ REST {name} error after retries: {e}")
+                
                 await asyncio.sleep(interval)
+    
+    async def _fetch_with_retry(self, sess, url, name):
+        """
+        Fetch REST data with automatic retry on failures.
+        Uses tenacity for exponential backoff and configurable retry logic.
+        """
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=2, max=10),
+            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+            before_sleep=before_sleep_log(retry_logger, logging.WARNING) if TENACITY_AVAILABLE else None,
+            reraise=True
+        )
+        async def _fetch():
+            async with sess.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+        
+        return await _fetch()
 
     async def proc_oi(self, name, data, ts):
         val = float(data.get("openInterest", 0))
@@ -17182,27 +17276,70 @@ class MarketIngestorActor:
             await self.ws_connection.close()
     
     async def _ws_listener(self):
-        """Listen to WebSocket with reconnection"""
+        """
+        Listen to WebSocket with robust reconnection logic.
+        
+        Features:
+        - Exponential backoff with max limit
+        - Connection state tracking
+        - Graceful error handling
+        - Automatic recovery
+        """
         backoff = 1
+        max_backoff = 60
+        connection_attempts = 0
         
         while self.is_running:
             try:
-                async with websockets.connect(self.ws_url) as ws:
+                connection_attempts += 1
+                print(f"[MarketIngestorActor] 🔄 WS connection attempt #{connection_attempts}")
+                
+                async with websockets.connect(
+                    self.ws_url,
+                    ping_interval=40,
+                    ping_timeout=30,
+                    close_timeout=5,
+                    max_size=10_000_000
+                ) as ws:
                     self.ws_connection = ws
                     self.reconnection_count += 1
+                    print(f"[MarketIngestorActor] ✅ WS connected successfully")
+                    
+                    # Reset backoff on successful connection
                     backoff = 1
+                    connection_attempts = 0
                     
                     while self.is_running:
-                        message = await asyncio.wait_for(ws.recv(), timeout=30)
-                        self.last_heartbeat = time.time()
-                        self.messages_received += 1
-                        await self._handle_ws_message(message)
+                        try:
+                            message = await asyncio.wait_for(ws.recv(), timeout=30)
+                            self.last_heartbeat = time.time()
+                            self.messages_received += 1
+                            await self._handle_ws_message(message)
+                        except asyncio.TimeoutError:
+                            print(f"[MarketIngestorActor] ⚠️ Message timeout - connection may be stale")
+                            break  # Reconnect
+                        except Exception as e:
+                            print(f"[MarketIngestorActor] ⚠️ Message error: {e}")
+                            
+            except websockets.exceptions.ConnectionClosed as e:
+                print(f"[MarketIngestorActor] ⚠️ WS closed: {e}")
             except Exception as e:
-                print(f"[MarketIngestorActor] WS error: {e}")
+                print(f"[MarketIngestorActor] ⚠️ WS error: {e}")
             
+            # Clear connection state
+            self.ws_connection = None
+            
+            # Reconnect with exponential backoff
             if self.is_running:
+                print(f"[MarketIngestorActor] 🔄 Reconnecting in {backoff}s...")
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60)
+                backoff = min(backoff * 2, max_backoff)
+                
+                # Add jitter to prevent thundering herd
+                if backoff > 4:
+                    import random
+                    jitter = random.uniform(0, min(backoff * 0.3, 5))
+                    await asyncio.sleep(jitter)
     
     async def _handle_ws_message(self, message: str):
         """Parse and route message"""
